@@ -1,22 +1,34 @@
 // Reads video info and makes thumbnails / remuxes using the ffmpeg.exe and ffprobe.exe
 // that ship inside the OBS engine package (no separate FFmpeg install needed).
-import { execFile } from 'child_process'
+import { execFile, type ChildProcess } from 'child_process'
+import * as os from 'os'
 import * as path from 'path'
 import { createLogger } from '../logger'
 
 const log = createLogger('ffmpeg')
 
-function toolPath(name: 'ffmpeg' | 'ffprobe'): string {
+export function toolPath(name: 'ffmpeg' | 'ffprobe'): string {
   const dir = path.dirname(require.resolve('obs-studio-node')).replace('app.asar', 'app.asar.unpacked')
   return path.join(dir, `${name}.exe`)
 }
 
-function run(tool: 'ffmpeg' | 'ffprobe', args: string[], timeoutMs = 60000): Promise<string> {
+/** Background work runs below normal priority so a game you're playing keeps its frame rate. */
+export function lowPriority(child: ChildProcess): void {
+  try {
+    if (child.pid) os.setPriority(child.pid, os.constants.priority.PRIORITY_BELOW_NORMAL)
+  } catch {
+    /* the process may already be done */
+  }
+}
+
+/** Runs ffmpeg/ffprobe. `withStderr` also returns what it printed to stderr (where volumedetect reports). */
+export function run(tool: 'ffmpeg' | 'ffprobe', args: string[], timeoutMs = 60000, withStderr = false): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(toolPath(tool), args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+    const child = execFile(toolPath(tool), args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) reject(new Error(`${tool} failed: ${(stderr || err.message).trim().split('\n').slice(-3).join(' ')}`))
-      else resolve(stdout)
+      else resolve(withStderr ? stdout + stderr : stdout)
     })
+    lowPriority(child)
   })
 }
 

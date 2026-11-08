@@ -352,6 +352,19 @@ export interface UpdateStatus {
   during?: 'check' | 'download'
 }
 
+// ----- Multi-track audio playback -----
+
+export interface AudioTrackInfo {
+  /** 0-based audio track number in the file. */
+  index: number
+  /** Playable URL of just this track. */
+  url: string
+  /** Name from Settings → Audio tracks. */
+  name: string
+  /** True if the track has no sound at all. */
+  silent: boolean
+}
+
 // ----- Clip editor -----
 
 export interface EditStrip {
@@ -363,6 +376,8 @@ export interface EditStrip {
   stripCount: number
   /** Audio waveform image, or null if the clip has no audio. */
   wave: string | null
+  /** One waveform image per audio track (null if it couldn't be drawn). */
+  waves: (string | null)[]
   audioStreams: number
 }
 
@@ -370,6 +385,26 @@ export interface EditSegment {
   /** Seconds in the original clip. */
   start: number
   end: number
+  /** Playback speed of this part (1 = normal, 2 = twice as fast). */
+  speed: number
+}
+
+export interface EditTrack {
+  /** Include this track in the exported clip. */
+  keep: boolean
+  /** Hear it while editing (doesn't change the export). */
+  listen: boolean
+  /** 1 = 100%, up to 2. */
+  volume: number
+}
+
+export interface EditAudio {
+  tracks: EditTrack[]
+  /** Seconds. */
+  fadeIn: number
+  fadeOut: number
+  /** true = mix the kept tracks into one track; false = keep them as separate tracks. */
+  mix: boolean
 }
 
 export interface CropRect {
@@ -383,6 +418,7 @@ export interface EditExportRequest {
   clipId: number
   segments: EditSegment[]
   crop: CropRect | null
+  audio: EditAudio
 }
 
 export interface ObsCollectionPreview {

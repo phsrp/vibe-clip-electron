@@ -9,6 +9,7 @@ import { getDb, type ClipRow } from './db'
 import { makeThumbnail, probe } from './media'
 import { mediaUrl } from './protocol'
 import { allGames, DESKTOP } from '../games/games'
+import { forgetAudioTracks } from './audioTracks'
 
 const log = createLogger('library')
 
@@ -244,6 +245,7 @@ export async function scan(root: string): Promise<void> {
     if (!fs.existsSync(r.path) && !busyPaths.has(r.path.toLowerCase())) {
       db.prepare('DELETE FROM clips WHERE id = ?').run(r.id)
       if (r.thumb) fs.rmSync(r.thumb, { force: true })
+      forgetAudioTracks(r.id)
       removed++
     }
   }
@@ -294,6 +296,7 @@ export async function remove(ids: number[]): Promise<string[]> {
       if (fs.existsSync(r.path)) await shell.trashItem(r.path)
       getDb().prepare('DELETE FROM clips WHERE id = ?').run(id)
       if (r.thumb) fs.rmSync(r.thumb, { force: true })
+      forgetAudioTracks(r.id)
       log.info(`Deleted ${r.path}`)
     } catch (e) {
       log.error(`Could not delete ${r.path}`, e)

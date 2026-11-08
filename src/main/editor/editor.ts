@@ -1,5 +1,6 @@
-// The clip editor's background work: timeline pictures (thumbnail strip + waveform) and exporting
-// the edit (kept parts joined together, optionally cropped) as a new clip with FFmpeg.
+// The clip editor's background work: timeline pictures (thumbnail strip + a waveform per audio
+// track) and exporting the edit (kept parts joined, each at its own speed, optionally cropped,
+// with per-track volume, fades, and tracks kept separate or mixed) as a new clip with FFmpeg.
 import { app } from 'electron'
 import { execFile, spawn, type ChildProcess } from 'child_process'
 import * as fs from 'fs'
@@ -9,7 +10,7 @@ import { createLogger } from '../logger'
 import { mediaUrl } from '../library/protocol'
 import * as library from '../library/library'
 import { getDb, type ClipRow } from '../library/db'
-import { probe } from '../library/media'
+import { lowPriority, probe } from '../library/media'
 import { resolveEncoder } from '../engine/encoders'
 import { getSettings } from '../settings'
 
@@ -26,34 +27,38 @@ function thumbsDir(): string {
 }
 
 function run(args: string[], timeout = 120000): Promise<void> {
-  return new Promise((resolve, reject) =>
-    execFile(ffmpegPath(), args, { windowsHide: true, timeout, maxBuffer: 16 * 1024 * 1024 }, (err, _o, stderr) =>
+  return new Promise((resolve, reject) => {
+    const child = execFile(ffmpegPath(), args, { windowsHide: true, timeout, maxBuffer: 16 * 1024 * 1024 }, (err, _o, stderr) =>
       err ? reject(new Error((stderr || err.message).trim().split('\n').slice(-2).join(' '))) : resolve()
     )
-  )
+    lowPriority(child)
+  })
 }
 
-/** Thumbnail strip (one image with N frames side by side) and an audio waveform picture for the timeline. */
+/** Thumbnail strip (one image with N frames side by side) and one waveform picture per audio track. */
 export async function makeStrip(clipId: number): Promise<EditStrip> {
   const row = getDb().prepare('SELECT * FROM clips WHERE id = ?').get(clipId) as ClipRow | undefined
   if (!row) throw new Error('Clip not found')
   const info = await probe(row.path)
   const count = 24
   const strip = path.join(thumbsDir(), `strip_${clipId}.jpg`)
-  const wave = path.join(thumbsDir(), `wave_${clipId}.png`)
   const fresh = (f: string) => fs.existsSync(f) && fs.statSync(f).mtimeMs >= fs.statSync(row.path).mtimeMs
   if (!fresh(strip)) {
     const rate = Math.max(count / Math.max(info.duration, 0.1), 0.01)
     await run(['-y', '-v', 'error', '-i', row.path, '-vf', `fps=${rate.toFixed(5)},scale=160:-2,tile=${count}x1`, '-frames:v', '1', '-q:v', '5', strip])
   }
-  let waveOk = true
-  if (!fresh(wave)) {
-    try {
-      await run(['-y', '-v', 'error', '-i', row.path, '-filter_complex', '[0:a:0]aformat=channel_layouts=mono,showwavespic=s=2400x80:colors=white:scale=sqrt', '-frames:v', '1', wave])
-    } catch (e) {
-      log.warn('No waveform (clip may have no audio)', e)
-      waveOk = false
+  const streams = await audioStreamCount(row.path)
+  const waves: (string | null)[] = []
+  for (let i = 0; i < streams; i++) {
+    const wave = path.join(thumbsDir(), `wave_${clipId}_${i}.png`)
+    if (!fresh(wave)) {
+      try {
+        await run(['-y', '-v', 'error', '-i', row.path, '-filter_complex', `[0:a:${i}]aformat=channel_layouts=mono,showwavespic=s=2400x60:colors=white:scale=sqrt`, '-frames:v', '1', wave])
+      } catch (e) {
+        log.warn(`No waveform for track ${i + 1}`, e)
+      }
     }
+    waves.push(fs.existsSync(wave) ? mediaUrl(wave) : null)
   }
   return {
     duration: info.duration,
@@ -61,8 +66,9 @@ export async function makeStrip(clipId: number): Promise<EditStrip> {
     height: info.height,
     strip: mediaUrl(strip),
     stripCount: count,
-    wave: waveOk && fs.existsSync(wave) ? mediaUrl(wave) : null,
-    audioStreams: await audioStreamCount(row.path)
+    wave: waves[0] ?? null,
+    waves,
+    audioStreams: streams
   }
 }
 
@@ -94,26 +100,69 @@ function encoderArgs(enc: string): string[] {
   return ['-c:v', 'libx264', '-preset', 'medium', '-crf', '18']
 }
 
-function buildFilter(req: EditExportRequest, audio: number): { filter: string; maps: string[] } {
+/** FFmpeg's atempo only goes from 0.5x to 2x, so bigger changes are chained (4x = 2x then 2x). */
+function atempo(speed: number): string {
+  const parts: number[] = []
+  let s = speed
+  while (s > 2) {
+    parts.push(2)
+    s /= 2
+  }
+  while (s < 0.5) {
+    parts.push(0.5)
+    s /= 0.5
+  }
+  parts.push(s)
+  return parts.map((p) => `atempo=${p.toFixed(5)}`).join(',')
+}
+
+function buildFilter(req: EditExportRequest, streams: number): { filter: string; maps: string[]; total: number } {
+  const n = (x: number) => x.toFixed(3)
+  const speed = (s: { speed?: number }) => Math.min(4, Math.max(0.25, s.speed || 1))
+  const total = req.segments.reduce((t, s) => t + (s.end - s.start) / speed(s), 0)
+  // Tracks that go into the export (in their original order).
+  const kept = Array.from({ length: streams }, (_, i) => i).filter((i) => req.audio.tracks[i]?.keep !== false)
   const parts: string[] = []
   const concatIn: string[] = []
   req.segments.forEach((s, i) => {
-    parts.push(`[0:v]trim=start=${s.start.toFixed(3)}:end=${s.end.toFixed(3)},setpts=PTS-STARTPTS[v${i}]`)
+    const sp = speed(s)
+    parts.push(`[0:v]trim=start=${n(s.start)}:end=${n(s.end)},setpts=(PTS-STARTPTS)/${sp}[v${i}]`)
     concatIn.push(`[v${i}]`)
-    for (let a = 0; a < audio; a++) {
-      parts.push(`[0:a:${a}]atrim=start=${s.start.toFixed(3)}:end=${s.end.toFixed(3)},asetpts=PTS-STARTPTS[a${i}_${a}]`)
-      concatIn.push(`[a${i}_${a}]`)
-    }
+    kept.forEach((a, k) => {
+      const tempo = sp === 1 ? '' : `,${atempo(sp)}`
+      parts.push(`[0:a:${a}]atrim=start=${n(s.start)}:end=${n(s.end)},asetpts=PTS-STARTPTS${tempo}[a${i}_${k}]`)
+      concatIn.push(`[a${i}_${k}]`)
+    })
   })
-  const outs = ['[vcat]', ...Array.from({ length: audio }, (_, a) => `[aout${a}]`)]
-  parts.push(`${concatIn.join('')}concat=n=${req.segments.length}:v=1:a=${audio}${outs.join('')}`)
+  const catOut = ['[vcat]', ...kept.map((_, k) => `[ac${k}]`)]
+  parts.push(`${concatIn.join('')}concat=n=${req.segments.length}:v=1:a=${kept.length}${catOut.join('')}`)
+
   let vLabel = '[vcat]'
   if (req.crop) {
-    const even = (n: number) => Math.max(2, Math.floor(n / 2) * 2)
+    const even = (x: number) => Math.max(2, Math.floor(x / 2) * 2)
     parts.push(`[vcat]crop=${even(req.crop.width)}:${even(req.crop.height)}:${Math.round(req.crop.x)}:${Math.round(req.crop.y)}[vout]`)
     vLabel = '[vout]'
   }
-  return { filter: parts.join(';'), maps: [vLabel, ...outs.slice(1)] }
+
+  // Per-track volume, then fades.
+  const fadeIn = Math.min(Math.max(0, req.audio.fadeIn), total)
+  const fadeOut = Math.min(Math.max(0, req.audio.fadeOut), total)
+  const audioOut: string[] = []
+  kept.forEach((a, k) => {
+    const f: string[] = []
+    const vol = req.audio.tracks[a]?.volume ?? 1
+    if (Math.abs(vol - 1) > 0.001) f.push(`volume=${vol.toFixed(3)}`)
+    if (fadeIn > 0) f.push(`afade=t=in:st=0:d=${n(fadeIn)}`)
+    if (fadeOut > 0) f.push(`afade=t=out:st=${n(Math.max(0, total - fadeOut))}:d=${n(fadeOut)}`)
+    if (!f.length) f.push('anull')
+    parts.push(`[ac${k}]${f.join(',')}[ao${k}]`)
+    audioOut.push(`[ao${k}]`)
+  })
+  if (req.audio.mix && audioOut.length > 1) {
+    parts.push(`${audioOut.join('')}amix=inputs=${audioOut.length}:normalize=0:duration=longest[amix]`)
+    return { filter: parts.join(';'), maps: [vLabel, '[amix]'], total }
+  }
+  return { filter: parts.join(';'), maps: [vLabel, ...audioOut], total }
 }
 
 /** Exports the edit as a new clip next to the original. Calls onProgress with 0..1. */
@@ -121,23 +170,26 @@ export async function exportEdit(req: EditExportRequest, onProgress: (p: number)
   const row = getDb().prepare('SELECT * FROM clips WHERE id = ?').get(req.clipId) as ClipRow | undefined
   if (!row) throw new Error('Clip not found')
   if (!req.segments.length) throw new Error('Nothing to export: every part was removed')
-  const audio = await audioStreamCount(row.path)
-  const total = req.segments.reduce((t, s) => t + (s.end - s.start), 0)
+  const streams = await audioStreamCount(row.path)
   const dir = path.dirname(row.path)
   const base = path.parse(row.path).name.replace(/ \(edited( \d+)?\)$/, '')
   let out = path.join(dir, `${base} (edited).mp4`)
   for (let i = 2; fs.existsSync(out); i++) out = path.join(dir, `${base} (edited ${i}).mp4`)
 
-  const { filter, maps } = buildFilter(req, audio)
+  const { filter, maps, total } = buildFilter(req, streams)
+  log.info(`Export audio settings: ${JSON.stringify(req.audio)}`)
+  const hasAudio = maps.length > 1
   const attempt = (enc: string) =>
     new Promise<void>((resolve, reject) => {
       const args = ['-y', '-v', 'error', '-progress', 'pipe:1', '-nostats', '-i', row.path, '-filter_complex', filter]
       for (const m of maps) args.push('-map', m)
       args.push(...encoderArgs(enc), '-pix_fmt', 'yuv420p')
-      if (audio) args.push('-c:a', 'aac', '-b:a', '192k')
+      if (hasAudio) args.push('-c:a', 'aac', '-b:a', '192k')
       args.push('-movflags', '+faststart', out)
-      log.info(`Exporting ${req.segments.length} part(s), ${total.toFixed(1)}s, ${enc}${req.crop ? ', cropped' : ''} -> ${out}`)
+      const speeds = [...new Set(req.segments.map((s) => s.speed || 1))].join('/')
+      log.info(`Exporting ${req.segments.length} part(s) at ${speeds}x, ${total.toFixed(1)}s, ${maps.length - 1} audio track(s)${req.audio.mix ? ' mixed' : ''}, ${enc}${req.crop ? ', cropped' : ''} -> ${out}`)
       const p = spawn(ffmpegPath(), args, { windowsHide: true })
+      lowPriority(p)
       current = p
       let err = ''
       p.stdout.on('data', (d: Buffer) => {
@@ -177,7 +229,7 @@ export async function exportEdit(req: EditExportRequest, onProgress: (p: number)
     kind: row.kind === 'screenshot' ? 'clip' : row.kind,
     game: row.game,
     gameName: row.game_name,
-    title: `${row.title} (edited)`
+    title: `${row.title.replace(/ \(edited\)$/, '')} (edited)`
   })
   return id
 }

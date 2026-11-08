@@ -345,3 +345,149 @@
   font-weight: 600;
   pointer-events: none;
 }
+
+/* ----- Multi-track timeline (headers on the left, one row per audio track) ----- */
+.timeline {
+  display: flex;
+  height: auto;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.tl-heads {
+  flex: 0 0 262px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  position: sticky;
+  left: 0;
+  z-index: 4;
+}
+.tl-scroll {
+  flex: 1;
+  height: auto;
+}
+.tl-inner {
+  height: auto;
+  min-height: 100%;
+  padding-bottom: 4px;
+}
+.tl-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.ruler-head {
+  height: 25px;
+  border-bottom: 1px solid var(--border);
+}
+.video-head {
+  height: 78px;
+  padding-top: 8px;
+  color: var(--text);
+}
+.fades-head,
+.tl-fades-row {
+  height: 30px;
+}
+.fades-head {
+  border-top: 1px solid var(--border);
+}
+.tl-fades-row {
+  border-top: 1px solid var(--border);
+}
+.small-num {
+  width: 38px;
+  height: 22px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  font-size: 11.5px;
+  text-align: right;
+  outline: none;
+}
+.small-num:focus {
+  border-color: var(--accent);
+}
+.track-head {
+  height: 40px;
+  padding-bottom: 6px;
+}
+.track-head.dropped .track-keep,
+.track-head.dropped .track-vol,
+.track-head.dropped .track-pct {
+  opacity: 0.45;
+}
+.track-keep {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--text);
+}
+.track-keep input {
+  accent-color: var(--accent);
+}
+.track-keep b {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--surface-active);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.track-head:not(.dropped) .track-keep b {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+.track-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.track-head .icon-btn.on {
+  color: var(--accent);
+}
+.track-vol {
+  width: 64px;
+  flex-shrink: 0;
+}
+.track-pct {
+  width: 34px;
+  text-align: right;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.tl-wave {
+  height: 34px;
+  margin: 0 0 6px;
+  border-radius: 4px;
+}
+.tl-wave.dropped {
+  opacity: 0.35;
+}
+.wave-silent {
+  position: absolute;
+  top: 9px;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+.seg-speed {
+  color: var(--accent);
+}
+.tool-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.select.narrow {
+  min-width: 70px;
+}

@@ -12,6 +12,7 @@ const TYPES: Record<string, string> = {
   '.mp4': 'video/mp4',
   '.mov': 'video/mp4',
   '.mkv': 'video/webm',
+  '.m4a': 'audio/mp4',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg'
@@ -69,13 +70,17 @@ export function handleMediaProtocol(isAllowed: (file: string) => boolean): void 
           'Content-Type': type,
           'Content-Length': String(end - start + 1),
           'Content-Range': `bytes ${start}-${end}/${size}`,
-          'Accept-Ranges': 'bytes'
+          'Accept-Ranges': 'bytes',
+          // Lets the player route the sound through Web Audio (per-track volume above 100%).
+          'Access-Control-Allow-Origin': '*'
         }
       })
     }
     return new Response(Readable.toWeb(fs.createReadStream(file)) as ReadableStream, {
       status: 200,
-      headers: { 'Content-Type': type, 'Content-Length': String(size), 'Accept-Ranges': 'bytes' }
+      headers: { 'Content-Type': type, 'Content-Length': String(size), 'Accept-Ranges': 'bytes',
+          // Lets the player route the sound through Web Audio (per-track volume above 100%).
+          'Access-Control-Allow-Origin': '*' }
     })
   })
 }

@@ -1,0 +1,239 @@
+/* The custom clip player (custom controls + audio track mixer). */
+.vplayer {
+  position: relative;
+  width: 100%;
+  display: grid;
+  place-items: center;
+  background: #000;
+}
+.vplayer video {
+  display: block;
+  width: 100%;
+  max-height: calc(92vh - 64px);
+  object-fit: contain;
+  outline: none;
+  cursor: pointer;
+}
+.vplayer:fullscreen video {
+  max-height: 100vh;
+  height: 100vh;
+}
+.vplayer.idle {
+  cursor: none;
+}
+.vplayer.idle .vp-controls {
+  opacity: 0;
+  transform: translateY(6px);
+}
+.vp-controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 24px 14px 10px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0));
+  color: #fff;
+  transition: opacity 0.25s, transform 0.25s;
+}
+.vp-seek {
+  position: relative;
+  height: 16px;
+  cursor: pointer;
+  touch-action: none;
+}
+.vp-seek::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 6px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.25);
+  transition: height 0.15s, top 0.15s;
+}
+.vp-seek:hover::before {
+  top: 5px;
+  height: 6px;
+}
+.vp-seek-fill {
+  position: absolute;
+  left: 0;
+  top: 6px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.vp-seek:hover .vp-seek-fill {
+  top: 5px;
+  height: 6px;
+}
+.vp-seek-knob {
+  position: absolute;
+  top: 2px;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  transform: scale(0);
+  transition: transform 0.15s;
+  pointer-events: none;
+}
+.vp-seek:hover .vp-seek-knob {
+  transform: scale(1);
+}
+.vp-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.vp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 6px;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  transition: background 0.15s, transform 0.15s;
+}
+.vp-btn:hover,
+.vp-btn.on {
+  background: rgba(255, 255, 255, 0.16);
+}
+.vp-btn:active {
+  transform: scale(0.94);
+}
+.vp-btn.big {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-text);
+}
+.vp-btn.big:hover {
+  background: var(--accent-hover);
+}
+.vp-btn.text {
+  padding: 0 10px;
+}
+.vp-time {
+  margin-left: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.vp-time .muted {
+  color: rgba(255, 255, 255, 0.6);
+}
+.vp-volume {
+  width: 90px;
+}
+.vp-panel {
+  position: absolute;
+  right: 14px;
+  bottom: 74px;
+  z-index: 2;
+  padding: 12px;
+  border-radius: var(--radius);
+  background: var(--bg-sidebar);
+  color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  animation: pop-in 0.16s ease-out;
+}
+.tracks-panel {
+  width: 360px;
+}
+.vp-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.vp-track {
+  display: grid;
+  grid-template-columns: 1fr 110px 42px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  border-radius: var(--radius-sm);
+  opacity: 0.6;
+  transition: opacity 0.15s, background 0.15s;
+}
+.vp-track.on {
+  opacity: 1;
+}
+.vp-track:hover {
+  background: var(--surface-hover);
+}
+.vp-track-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.vp-track-name span:not(.tag) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vp-track-name b {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--surface-active);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.vp-track.on .vp-track-name b {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+.vp-track-name input {
+  accent-color: var(--accent);
+}
+.vp-pct {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.tracks-panel .muted.small {
+  margin: 8px 4px 0;
+}
+.speed-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  right: 200px;
+  padding: 6px;
+}
+.vp-speed {
+  height: 28px;
+  padding: 0 18px;
+  border-radius: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+}
+.vp-speed:hover {
+  background: var(--surface-hover);
+}
+.vp-speed.on {
+  background: var(--accent);
+  color: var(--accent-text);
+}

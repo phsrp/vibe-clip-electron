@@ -35,6 +35,8 @@ let trayHintShown = false
 
 // Developer helper: VIBE_DATA_DIR=<folder> keeps settings, database and logs separate (for testing).
 if (process.env['VIBE_DATA_DIR']) app.setPath('userData', process.env['VIBE_DATA_DIR'])
+// Hidden tests make no sound either.
+if (process.env['VIBE_HIDDEN']) app.commandLine.appendSwitch('mute-audio')
 
 // Only one copy of the app may run (two would fight over the engine and hotkeys).
 if (!process.env['VIBE_CAPTURE'] && !app.requestSingleInstanceLock()) {
@@ -72,7 +74,8 @@ function createWindow(): void {
     }
   })
   setMainWindow(win)
-  const startHidden = process.argv.includes('--hidden')
+  // VIBE_HIDDEN (developer tests): never show the window, so testing doesn't interrupt a game.
+  const startHidden = process.argv.includes('--hidden') || !!process.env['VIBE_HIDDEN']
   win.once('ready-to-show', () => {
     if (!startHidden) win?.show()
   })
@@ -114,10 +117,10 @@ function createWindow(): void {
           await win!.webContents.executeJavaScript(process.env['VIBE_CAPTURE_JS']).catch((e) => log.error('Test script failed', e))
         }
         await new Promise((r) => setTimeout(r, 800))
-        // A hidden window can't be captured, so just quit in that case.
-        if (win!.isVisible()) {
-          const img = await win!.webContents.capturePage()
-          fs.writeFileSync(shot, img.toPNG())
+        // A window that was never shown can still be captured off-screen; give up after a few seconds.
+        if (win!.isVisible() || process.env['VIBE_HIDDEN']) {
+          const img = await Promise.race([win!.webContents.capturePage(), new Promise<null>((r) => setTimeout(() => r(null), 5000))])
+          if (img && !img.isEmpty()) fs.writeFileSync(shot, img.toPNG())
         }
         quitting = true
         app.quit()
@@ -145,7 +148,8 @@ app.whenReady().then(async () => {
   handleMediaProtocol((file) => library.isLibraryPath(file, getSettings().outputFolder))
   library.onLibraryChange((snap) => send('library:changed', snap))
   registerIpc({ engine: () => engine, capture, pauseHotkeys })
-  setOverlayToast(showOverlayToast)
+  // In hidden tests, never pop anything up over the screen.
+  setOverlayToast(process.env['VIBE_HIDDEN'] ? () => {} : showOverlayToast)
   createWindow()
   // "Restart now" on an update: save/stop everything and wait for the engine before installing.
   setupUpdater(async () => {

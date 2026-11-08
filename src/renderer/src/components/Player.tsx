@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { IconChevronLeft, IconChevronRight, IconCut, IconFolderOpen, IconX } from '@tabler/icons-react'
 import type { Clip } from '@shared/types'
 import { formatDuration, formatSize } from '../lib/format'
 import { useOverlay } from '../lib/overlay'
+import { VideoPlayer } from './VideoPlayer'
 
 interface Props {
   clip: Clip
@@ -14,7 +15,6 @@ interface Props {
 }
 
 export function Player({ clip, list, onNavigate, onClose, onEdit }: Props) {
-  const videoRef = useRef<HTMLVideoElement>(null)
   const [error, setError] = useState<string | null>(null)
   useOverlay(true)
   const index = list.findIndex((c) => c.id === clip.id)
@@ -29,11 +29,6 @@ export function Player({ clip, list, onNavigate, onClose, onEdit }: Props) {
       if (e.key === 'Escape') onClose()
       else if (e.key === 'ArrowLeft' && e.ctrlKey && prev) onNavigate(prev)
       else if (e.key === 'ArrowRight' && e.ctrlKey && next) onNavigate(next)
-      else if (e.key === ' ' && videoRef.current && document.activeElement !== videoRef.current) {
-        e.preventDefault()
-        if (videoRef.current.paused) videoRef.current.play()
-        else videoRef.current.pause()
-      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -80,18 +75,7 @@ export function Player({ clip, list, onNavigate, onClose, onEdit }: Props) {
           ) : clip.kind === 'screenshot' ? (
             <img src={clip.url} alt="" onError={() => setError("This screenshot couldn't be loaded. The file may have been moved or deleted.")} />
           ) : (
-            <video
-              key={clip.id}
-              ref={videoRef}
-              src={clip.url}
-              controls
-              autoPlay
-              onError={() =>
-                setError(
-                  "This video can't be played here. The file may have been moved or deleted, or it uses a format the built-in player doesn't support."
-                )
-              }
-            />
+            <VideoPlayer key={clip.id} clip={clip} onError={setError} />
           )}
           {next && (
             <button className="nav-btn right" title="Next (Ctrl →)" onClick={() => onNavigate(next)}>

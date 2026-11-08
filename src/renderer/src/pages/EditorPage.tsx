@@ -1,4 +1,5 @@
-// Clip editor: trim the ends, split at the playhead, remove parts, crop, and export a new clip.
+// Clip editor: trim, split, remove parts, change each part's speed, crop, and adjust every audio
+// track (keep/drop, listen, volume, fades), then export a new clip.
 // Simplified from the Vibe Video Editor's timeline (same ruler / playhead / trim-handle style).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -6,6 +7,8 @@ import {
   IconArrowForwardUp,
   IconCrop,
   IconDeviceFloppy,
+  IconHeadphones,
+  IconHeadphonesOff,
   IconPlayerPauseFilled,
   IconPlayerPlayFilled,
   IconRestore,
@@ -14,11 +17,14 @@ import {
   IconX,
   IconZoomIn
 } from '@tabler/icons-react'
-import type { Clip, CropRect, EditSegment, EditStrip } from '@shared/types'
+import type { AudioTrackInfo, Clip, CropRect, EditAudio, EditSegment, EditStrip, EditTrack } from '@shared/types'
+import { MultiTrackAudio } from '../lib/multitrack'
+import { mixFor } from '../lib/trackPrefs'
 
 interface EditState {
   segments: EditSegment[]
   crop: CropRect | null
+  audio: EditAudio
 }
 
 const ASPECTS: { id: string; label: string; ratio: number | null }[] = [
@@ -30,6 +36,8 @@ const ASPECTS: { id: string; label: string; ratio: number | null }[] = [
   { id: '4:5', label: '4:5', ratio: 4 / 5 }
 ]
 
+const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4]
+
 function fmt(t: number, precise = true): string {
   const s = Math.max(0, t)
   const m = Math.floor(s / 60)
@@ -37,10 +45,15 @@ function fmt(t: number, precise = true): string {
   return precise ? `${m}:${sec.toFixed(2).padStart(5, '0')}` : `${m}:${String(Math.floor(sec)).padStart(2, '0')}`
 }
 
+const sp = (s: EditSegment) => s.speed || 1
+const partLength = (s: EditSegment) => (s.end - s.start) / sp(s)
+
 export function EditorPage({ clip, onClose }: { clip: Clip; onClose: () => void }) {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const engine = useRef<MultiTrackAudio | null>(null)
   const [strip, setStrip] = useState<EditStrip | null>(null)
-  const [edit, setEdit] = useState<EditState>({ segments: [], crop: null })
+  const [trackInfo, setTrackInfo] = useState<AudioTrackInfo[]>([])
+  const [edit, setEdit] = useState<EditState>({ segments: [], crop: null, audio: { tracks: [], fadeIn: 0, fadeOut: 0, mix: false } })
   const [past, setPast] = useState<EditState[]>([])
   const [future, setFuture] = useState<EditState[]>([])
   const [selected, setSelected] = useState(0)
@@ -54,15 +67,41 @@ export function EditorPage({ clip, onClose }: { clip: Clip; onClose: () => void 
 
   useEffect(() => {
     setStrip(null)
-    window.api.editor.strip(clip.id).then((s) => {
-      if (!s) return
+    setTrackInfo([])
+    let alive = true
+    Promise.all([window.api.editor.strip(clip.id), window.api.media.audioTracks(clip.id)]).then(([s, t]) => {
+      if (!alive || !s) return
+      const info = t ?? []
       setStrip(s)
-      setEdit({ segments: [{ start: 0, end: s.duration }], crop: null })
+      setTrackInfo(info)
+      // Start with: every track that has sound kept, and the same tracks you listen to in the player.
+      const listen = mixFor(info)
+      const tracks: EditTrack[] = info.map((x, i) => ({ keep: !x.silent, listen: listen[i]?.enabled ?? true, volume: 1 }))
+      setEdit({ segments: [{ start: 0, end: s.duration, speed: 1 }], crop: null, audio: { tracks, fadeIn: 0, fadeOut: 0, mix: false } })
       setPast([])
       setFuture([])
       setSelected(0)
     })
+    return () => {
+      alive = false
+    }
   }, [clip.id])
+
+  // Play every audio track alongside the (muted) video.
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v || trackInfo.length === 0) return
+    v.muted = true
+    const e = new MultiTrackAudio(v, trackInfo.map((t) => t.url))
+    engine.current = e
+    return () => {
+      e.destroy()
+      engine.current = null
+    }
+  }, [trackInfo])
+  useEffect(() => {
+    edit.audio.tracks.forEach((t, i) => engine.current?.setTrack(i, { enabled: t.listen, volume: t.volume }))
+  }, [edit.audio.tracks, trackInfo])
 
   useEffect(() => window.api.editor.onProgress((p) => setProgress(p)), [])
 
@@ -86,8 +125,13 @@ export function EditorPage({ clip, onClose }: { clip: Clip; onClose: () => void 
     setEdit(future[0])
     setFuture((f) => f.slice(1))
   }
+  const setTrack = (i: number, patch: Partial<EditTrack>, done = true) => {
+    const next = { ...edit, audio: { ...edit.audio, tracks: edit.audio.tracks.map((t, j) => (j === i ? { ...t, ...patch } : t)) } }
+    if (done) commit(next)
+    else setEdit(next)
+  }
 
-  // ----- Playback that skips removed parts -----
+  // ----- Playback that skips removed parts and plays each part at its speed -----
   const seek = (t: number) => {
     const v = videoRef.current
     const c = Math.max(0, Math.min(duration, t))
@@ -110,6 +154,8 @@ export function EditorPage({ clip, onClose }: { clip: Clip; onClose: () => void 
             v.pause()
             setPlaying(false)
           }
+        } else if (Math.abs(v.playbackRate - sp(inside)) > 0.001) {
+          v.playbackRate = sp(inside)
         }
         setTime(v.currentTime)
       }
@@ -130,7 +176,9 @@ export function EditorPage({ clip, onClose }: { clip: Clip; onClose: () => void 
         const next = segs.find((s) => s.start >= time) ?? segs[0]
         v.currentTime = next.start
       }
-      v.play()
+      const cur = segs.find((s) => v.currentTime >= s.start - 0.01 && v.currentTime < s.end)
+      v.playbackRate = cur ? sp(cur) : 1
+      void v.play()
       setPlaying(true)
     } else {
       v.pause()
@@ -143,7 +191,7 @@ export function EditorPage({ clip, onClose }: { clip: Clip; onClose: () => void 
     const i = edit.segments.findIndex((s) => time > s.start + 0.05 && time < s.end - 0.05)
     if (i < 0) return
     const s = edit.segments[i]
-    const segments = [...edit.segments.slice(0, i), { start: s.start, end: time }, { start: time, end: s.end }, ...edit.segments.slice(i + 1)]
+    const segments = [...edit.segments.slice(0, i), { ...s, end: time }, { ...s, start: time }, ...edit.segments.slice(i + 1)]
     commit({ ...edit, segments })
     setSelected(i + 1)
   }
@@ -153,7 +201,14 @@ export function EditorPage({ clip, onClose }: { clip: Clip; onClose: () => void 
     commit({ ...edit, segments })
     setSelected(Math.max(0, selected - 1))
   }
-  const reset = () => commit({ segments: [{ start: 0, end: duration }], crop: null })
+  const setSpeed = (speed: number, all: boolean) =>
+    commit({ ...edit, segments: edit.segments.map((s, i) => (all || i === selected ? { ...s, speed } : s)) })
+  const reset = () =>
+    commit({
+      segments: [{ start: 0, end: duration, speed: 1 }],
+      crop: null,
+      audio: { ...edit.audio, fadeIn: 0, fadeOut: 0, mix: false, tracks: edit.audio.tracks.map((t, i) => ({ ...t, keep: !trackInfo[i]?.silent, volume: 1 })) }
+    })
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -175,13 +230,15 @@ export function EditorPage({ clip, onClose }: { clip: Clip; onClose: () => void 
     return () => window.removeEventListener('keydown', onKey)
   })
 
-  const kept = edit.segments.reduce((t, s) => t + (s.end - s.start), 0)
+  const kept = edit.segments.reduce((t, s) => t + partLength(s), 0)
+  const keptTracks = edit.audio.tracks.filter((t) => t.keep).length
+  const selSeg = edit.segments[selected]
 
   const doExport = async () => {
     setProgress(0)
     videoRef.current?.pause()
     setPlaying(false)
-    const id = await window.api.editor.export({ clipId: clip.id, segments: edit.segments, crop: edit.crop })
+    const id = await window.api.editor.export({ clipId: clip.id, segments: edit.segments, crop: edit.crop, audio: edit.audio })
     setProgress(null)
     if (id) onClose()
   }
@@ -194,6 +251,7 @@ export function EditorPage({ clip, onClose }: { clip: Clip; onClose: () => void 
           <span className="muted">
             {clip.gameName} · keeps {fmt(kept, false)} of {fmt(duration, false)}
             {edit.crop ? ` · cropped to ${Math.round(edit.crop.width)}×${Math.round(edit.crop.height)}` : ''}
+            {trackInfo.length > 0 ? ` · ${keptTracks} of ${trackInfo.length} audio track${trackInfo.length === 1 ? '' : 's'}` : ''}
           </span>
         </div>
         <button className="btn" onClick={undo} disabled={!past.length} title="Undo (Ctrl+Z)">
@@ -205,6 +263,17 @@ export function EditorPage({ clip, onClose }: { clip: Clip; onClose: () => void 
         <button className="btn" onClick={reset} title="Undo all edits">
           <IconRestore size={15} /> Reset
         </button>
+        {keptTracks > 1 && (
+          <select
+            className="select"
+            value={edit.audio.mix ? 'mix' : 'separate'}
+            onChange={(e) => commit({ ...edit, audio: { ...edit.audio, mix: e.target.value === 'mix' } })}
+            title="How the kept audio tracks are saved"
+          >
+            <option value="separate">Keep tracks separate</option>
+            <option value="mix">Mix into one track</option>
+          </select>
+        )}
         {progress === null ? (
           <button className="btn btn-accent" onClick={doExport} disabled={!strip || !edit.segments.length}>
             <IconDeviceFloppy size={15} /> Save as new clip
@@ -226,7 +295,13 @@ export function EditorPage({ clip, onClose }: { clip: Clip; onClose: () => void 
       </div>
 
       <div className="editor-stage">
-        <video ref={videoRef} src={clip.url} onLoadedMetadata={() => seek(0)} onPause={() => setPlaying(false)} onClick={togglePlay} />
+        <video
+          ref={videoRef}
+          src={clip.url}
+          onLoadedMetadata={() => seek(0)}
+          onPause={() => setPlaying(false)}
+          onClick={togglePlay}
+        />
         {cropMode && strip && (
           <CropOverlay
             video={videoRef}
@@ -252,6 +327,20 @@ export function EditorPage({ clip, onClose }: { clip: Clip; onClose: () => void 
         <button className="btn" onClick={removeSelected} disabled={edit.segments.length <= 1} title="Remove the selected part (Delete)">
           <IconTrash size={15} /> Remove part
         </button>
+        <div className="tool-sep" />
+        <span className="tool-label">Speed</span>
+        <select className="select narrow" value={selSeg ? sp(selSeg) : 1} onChange={(e) => setSpeed(Number(e.target.value), false)} title="Speed of the selected part">
+          {SPEEDS.map((s) => (
+            <option key={s} value={s}>
+              {s}×
+            </option>
+          ))}
+        </select>
+        {edit.segments.length > 1 && (
+          <button className="btn ghost" onClick={() => selSeg && setSpeed(sp(selSeg), true)} title="Use this speed for every part">
+            All parts
+          </button>
+        )}
         <div className="tool-sep" />
         <button className={'btn' + (cropMode ? ' btn-accent' : '')} onClick={() => setCropMode(!cropMode)} title="Crop (C)">
           <IconCrop size={15} /> Crop
@@ -300,6 +389,10 @@ export function EditorPage({ clip, onClose }: { clip: Clip; onClose: () => void 
           selected={selected}
           time={time}
           zoom={zoom}
+          trackInfo={trackInfo}
+          audio={edit.audio}
+          onAudio={(audio, done) => (done ? commit({ ...edit, audio }) : setEdit((e) => ({ ...e, audio })))}
+          onTrack={setTrack}
           onSelect={setSelected}
           onSeek={seek}
           onTrim={(segments, done) => (done ? commit({ ...edit, segments }) : setEdit((e) => ({ ...e, segments })))}
@@ -317,6 +410,32 @@ export function EditorPage({ clip, onClose }: { clip: Clip; onClose: () => void 
 
 // ---------------- Timeline ----------------
 
+/** A small number box that saves on Enter, when you click away, or half a second after you stop typing. */
+function SmallNum({ value, onChange, max }: { value: number; onChange: (v: number) => void; max: number }) {
+  const [text, setText] = useState(String(value))
+  const timer = useRef(0)
+  useEffect(() => setText(String(value)), [value])
+  const commit = (raw: string) => {
+    clearTimeout(timer.current)
+    const n = Math.min(max, Math.max(0, Number(raw)))
+    if (raw.trim() !== '' && Number.isFinite(n) && n !== value) onChange(Math.round(n * 10) / 10)
+  }
+  return (
+    <input
+      className="small-num"
+      value={text}
+      onChange={(e) => {
+        const v = e.target.value
+        setText(v)
+        clearTimeout(timer.current)
+        timer.current = window.setTimeout(() => commit(v), 500)
+      }}
+      onBlur={(e) => commit(e.target.value)}
+      onKeyDown={(e) => e.key === 'Enter' && commit((e.target as HTMLInputElement).value)}
+    />
+  )
+}
+
 function Timeline(p: {
   duration: number
   strip: EditStrip
@@ -324,6 +443,10 @@ function Timeline(p: {
   selected: number
   time: number
   zoom: number
+  trackInfo: AudioTrackInfo[]
+  audio: EditAudio
+  onAudio: (a: EditAudio, done: boolean) => void
+  onTrack: (i: number, patch: Partial<EditTrack>, done?: boolean) => void
   onSelect: (i: number) => void
   onSeek: (t: number) => void
   onTrim: (segments: EditSegment[], done: boolean) => void
@@ -397,15 +520,62 @@ function Timeline(p: {
   }
 
   const stripStyle = { backgroundImage: `url("${p.strip.strip}")`, backgroundSize: `${total}px 100%` }
+  const hasAudio = p.trackInfo.length > 0
 
   return (
     <div className="timeline">
+      <div className="tl-heads">
+        <div className="tl-head ruler-head" />
+        <div className="tl-head video-head">Video</div>
+        {hasAudio && (
+          <div className="tl-head fades-head">
+            <span>Fade in</span>
+            <SmallNum value={p.audio.fadeIn} max={30} onChange={(fadeIn) => p.onAudio({ ...p.audio, fadeIn }, true)} />
+            <span>out</span>
+            <SmallNum value={p.audio.fadeOut} max={30} onChange={(fadeOut) => p.onAudio({ ...p.audio, fadeOut }, true)} />
+            <span className="muted">s</span>
+          </div>
+        )}
+        {p.trackInfo.map((t, i) => {
+          const tr = p.audio.tracks[i] ?? { keep: true, listen: true, volume: 1 }
+          return (
+            <div key={t.index} className={'tl-head track-head' + (tr.keep ? '' : ' dropped')}>
+              <label className="track-keep" title={tr.keep ? 'In the export (click to leave it out)' : 'Left out of the export (click to include)'}>
+                <input type="checkbox" checked={tr.keep} onChange={(e) => p.onTrack(i, { keep: e.target.checked })} />
+                <b>{i + 1}</b>
+                <span className="track-title">{t.name}</span>
+              </label>
+              <button
+                className={'icon-btn small' + (tr.listen ? ' on' : '')}
+                title={tr.listen ? 'Listening (click to stop hearing it while editing)' : 'Not listening (click to hear it while editing)'}
+                onClick={() => p.onTrack(i, { listen: !tr.listen })}
+              >
+                {tr.listen ? <IconHeadphones size={14} /> : <IconHeadphonesOff size={14} />}
+              </button>
+              <input
+                type="range"
+                className="range track-vol"
+                min={0}
+                max={2}
+                step={0.01}
+                value={tr.volume}
+                onChange={(e) => p.onTrack(i, { volume: Number(e.target.value) }, false)}
+                onMouseUp={(e) => p.onTrack(i, { volume: Number((e.target as HTMLInputElement).value) }, true)}
+                onDoubleClick={() => p.onTrack(i, { volume: 1 })}
+                title="Volume (double-click for 100%)"
+              />
+              <span className="track-pct">{Math.round(tr.volume * 100)}%</span>
+            </div>
+          )
+        })}
+      </div>
       <div className="tl-scroll" ref={scrollRef}>
         <div className="tl-inner" style={{ width: total + PAD * 2 }}>
           <div className="tl-ruler" onPointerDown={scrub}>
             {ticks.map((t) => (
               <span key={t} className="tick" style={{ left: x(t) }}>
-                {fmt(t, false)}
+                {/* Half-second steps need the decimal, or labels repeat (0:00, 0:00, 0:01...). */}
+                {ticks.length > 1 && ticks[1] - ticks[0] < 1 ? `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}` : fmt(t, false)}
               </span>
             ))}
           </div>
@@ -422,20 +592,29 @@ function Timeline(p: {
                   scrub(e)
                 }}
               >
-                <span className="seg-label">{fmt(s.end - s.start, false)}</span>
+                <span className="seg-label">
+                  {fmt(partLength(s), false)}
+                  {sp(s) !== 1 && <b className="seg-speed"> {sp(s)}×</b>}
+                </span>
                 <span className="tl-handle left" onPointerDown={(e) => startTrim(e, i, 'start')} />
                 <span className="tl-handle right" onPointerDown={(e) => startTrim(e, i, 'end')} />
               </div>
             ))}
           </div>
-          {p.strip.wave && (
-            <div className="tl-wave" onPointerDown={scrub}>
-              <img src={p.strip.wave} style={{ left: PAD, width: total }} alt="" draggable={false} />
-              {p.segments.map((s, i) => (
-                <span key={i} className="wave-keep" style={{ left: x(s.start), width: (s.end - s.start) * pxPerSec }} />
-              ))}
-            </div>
-          )}
+          {hasAudio && <div className="tl-fades-row" onPointerDown={scrub} />}
+          {p.trackInfo.map((t, i) => {
+            const tr = p.audio.tracks[i]
+            const wave = p.strip.waves[i]
+            return (
+              <div key={t.index} className={'tl-wave' + (tr && !tr.keep ? ' dropped' : '')} onPointerDown={scrub}>
+                {wave && <img src={wave} style={{ left: PAD, width: total }} alt="" draggable={false} />}
+                {t.silent && <span className="wave-silent" style={{ left: PAD + 6 }}>silent</span>}
+                {p.segments.map((s, k) => (
+                  <span key={k} className="wave-keep" style={{ left: x(s.start), width: (s.end - s.start) * pxPerSec }} />
+                ))}
+              </div>
+            )
+          })}
           <div className="tl-playhead" style={{ left: x(p.time) }}>
             <span className="knob" />
           </div>

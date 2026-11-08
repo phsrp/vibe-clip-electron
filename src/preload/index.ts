@@ -3,6 +3,7 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type {
   AppSettings,
+  AudioTrackInfo,
   CaptureOptions,
   CaptureStatus,
   EditExportRequest,
@@ -113,6 +114,11 @@ const api = {
     onStatus: (cb: (s: UpdateStatus) => void) => listen('update:status', cb)
   },
   appVersion: (): Promise<string> => ipcRenderer.invoke('app:version'),
+
+  media: {
+    /** Each audio track of a clip as its own playable file. */
+    audioTracks: (clipId: number): Promise<AudioTrackInfo[] | undefined> => ipcRenderer.invoke('media:audioTracks', clipId)
+  },
 
   editor: {
     strip: (clipId: number): Promise<EditStrip | undefined> => ipcRenderer.invoke('editor:strip', clipId),

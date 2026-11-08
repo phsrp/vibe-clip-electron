@@ -6,6 +6,7 @@ import './styles/app.css'
 import './styles/sources.css'
 import './styles/editor.css'
 import './styles/settings.css'
+import './styles/player.css'
 import './styles/polish.css'
 import App from './App'
 

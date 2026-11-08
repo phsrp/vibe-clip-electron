@@ -15,6 +15,7 @@ import { HOTKEY_LABELS } from './hotkeys'
 import { osn } from './engine/obs'
 import type { CaptureService } from './capture/service'
 import { cancelExport, exportEdit, makeStrip } from './editor/editor'
+import { audioTracks } from './library/audioTracks'
 import type { AppSettings, EditExportRequest, EngineStatus, ProfilesState, PropertyTarget, SourceKind } from '@shared/types'
 
 export interface IpcDeps {
@@ -140,6 +141,8 @@ export function registerIpc(deps: IpcDeps): void {
   ipcMain.on('preview:hide', () => hidePreview())
   ipcMain.on('preview:select', (_e, id: string | null) => cap.getScenes()?.selectSource(id))
   ipcMain.handle('profiles:sourceSizes', (_e, ids: string[]) => cap.getScenes()?.sourceSizes(ids) ?? {})
+
+  ipcMain.handle('media:audioTracks', safe('read the audio tracks', (clipId: number) => audioTracks(clipId)))
 
   // ----- Clip editor -----
   ipcMain.handle('editor:strip', safe('prepare the timeline', (clipId: number) => makeStrip(clipId)))
