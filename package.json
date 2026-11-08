@@ -1,7 +1,7 @@
 {
   "name": "vibe-clip",
   "productName": "Vibe Clip",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "private": true,
   "description": "Game recording and clipping app built on the OBS engine",
   "main": "out/main/index.js",
