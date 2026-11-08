@@ -5,7 +5,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { createLogger, logPath } from './logger'
 import { execFile } from 'child_process'
-import { engineDir, startEngine, stopEngine, osn } from './engine/obs'
+import { engineDir, isEngineRunning, startEngine, stopEngine, watchEngine, osn } from './engine/obs'
 import { applyUpdateSchedule, installUpdate, setupUpdater, updateReady } from './updater'
 import { availableEncoders } from './engine/encoders'
 import { getSettings, onSettingsChange } from './settings'
@@ -236,11 +236,13 @@ app.whenReady().then(async () => {
   if (engine.running) {
     try {
       await capture.init()
+      if (restartedAfterCrash) toast('info', 'Vibe Clip restarted its recording engine', 'It had stopped unexpectedly. Clips and recording work again.')
     } catch (e) {
       engine.error = 'The capture setup failed: ' + (e instanceof Error ? e.message : String(e))
       log.error('Capture init failed', e)
       toast('error', "Recording couldn't be set up", engine.error)
     }
+    watchEngine(onEngineDied).catch((e) => log.warn('Engine watch failed', e))
   }
 
   // Game detection: tags clips with the game and switches to game capture.
@@ -264,6 +266,31 @@ app.whenReady().then(async () => {
   }
   detector.start()
 })
+
+const restartedAfterCrash = process.argv.includes('--engine-restarted')
+let relaunching = false
+
+/**
+ * The OBS engine stopped by itself. Everything (replay buffer, recording, sources) lives in it, so
+ * the reliable fix is to restart Vibe Clip. It comes back hidden if the window was hidden, so a game
+ * isn't interrupted. If it dies again right after such a restart, stop trying and say so.
+ */
+function onEngineDied(): void {
+  if (quitting || shuttingDown) return
+  engine.running = false
+  engine.error = 'The recording engine stopped unexpectedly.'
+  if (restartedAfterCrash && process.uptime() < 120) {
+    log.error('The OBS engine stopped again right after a restart; not restarting again')
+    toast('error', 'The recording engine keeps stopping', 'Clips and recording are off. Quit and reopen Vibe Clip; if it keeps happening, check the log (Settings).')
+    return
+  }
+  log.error('Restarting Vibe Clip to bring the OBS engine back')
+  const hidden = !win || !win.isVisible()
+  const args = process.argv.slice(1).filter((a) => a !== '--hidden' && a !== '--engine-restarted')
+  app.relaunch({ args: [...args, '--engine-restarted', ...(hidden ? ['--hidden'] : [])] })
+  relaunching = true
+  app.quit()
+}
 
 /** Waits until this app's obs64.exe has exited (its files can't be replaced by an update while it runs). */
 async function waitForEngineExit(timeoutMs = 10000): Promise<void> {
@@ -291,7 +318,8 @@ async function shutdownAll(): Promise<void> {
   quitting = true
   detector.stop()
   hidePreview()
-  await capture.shutdown().catch((err) => log.error('Shutdown error', err))
+  // If the engine already died there's nothing to stop (and waiting for its signals would hang).
+  if (isEngineRunning()) await capture.shutdown().catch((err) => log.error('Shutdown error', err))
   capture.outputs.recordingActive = false
   capture.outputs.replayActive = false
   flushProfiles()
@@ -311,7 +339,8 @@ app.on('before-quit', (e) => {
   shuttingDown = true
   shutdownAll()
     .then(async () => {
-      if (updateReady()) {
+      // (A pending update waits for a normal quit, not a restart after an engine crash.)
+      if (updateReady() && !relaunching) {
         await waitForEngineExit()
         await installUpdate(true, false)
       }

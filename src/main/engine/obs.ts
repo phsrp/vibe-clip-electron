@@ -3,6 +3,7 @@
 // so an OBS crash can't take the whole app down with it.
 import * as osn from 'obs-studio-node'
 import * as path from 'path'
+import { execFile } from 'child_process'
 import { app } from 'electron'
 import { createLogger } from '../logger'
 import { InitCode } from './constants'
@@ -55,7 +56,57 @@ export function startEngine(): void {
   log.info('OBS engine started')
 }
 
+// ----- Watching the engine -----
+// If obs64.exe dies (crash, killed, antivirus), every call into it fails with "Failed to make IPC
+// call". The watcher notices within a few seconds so the app can restart itself instead.
+
+let watchTimer: NodeJS.Timeout | null = null
+
+/** Finds this app's own obs64.exe (a child of the main process), so it can be watched. */
+function findEnginePid(): Promise<number | null> {
+  return new Promise((resolve) =>
+    execFile(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ParentProcessId=${process.pid} AND Name='obs64.exe'" | Select-Object -First 1).ProcessId`],
+      { windowsHide: true, timeout: 15000 },
+      (err, out) => resolve(err ? null : Number(out.trim()) || null)
+    )
+  )
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0) // signal 0 only checks that the process exists
+    return true
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/** Calls onDeath once if the engine process stops while the app still needs it. */
+export async function watchEngine(onDeath: () => void): Promise<void> {
+  const pid = await findEnginePid()
+  if (!pid) {
+    log.warn("Couldn't find the OBS engine process, so it won't be watched")
+    return
+  }
+  log.info(`Watching the OBS engine (process ${pid})`)
+  if (watchTimer) clearInterval(watchTimer)
+  watchTimer = setInterval(() => {
+    if (!started) return
+    if (isAlive(pid)) return
+    clearInterval(watchTimer!)
+    watchTimer = null
+    // Nothing to disconnect from any more: calls into it would only fail.
+    started = false
+    log.error(`The OBS engine (process ${pid}) stopped unexpectedly`)
+    onDeath()
+  }, 2000)
+}
+
 export function stopEngine(): void {
+  if (watchTimer) clearInterval(watchTimer)
+  watchTimer = null
   if (!started) return
   log.info('Stopping OBS engine')
   try {
