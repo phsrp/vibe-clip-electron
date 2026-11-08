@@ -1,3 +1,6 @@
-- New: light mode. Default, Gruvbox and Rosé Pine each come in dark and light (Rosé Pine's light mode is Rosé Pine Dawn)
-- New: a Dark / Light switch next to the theme in Settings → General
-- The "Clip saved" pop-up and the window buttons follow light mode too
+- New player: hear every audio track (desktop, mic and the rest) with a track mixer, per-track volume up to 200%, speed, frame stepping and fullscreen
+- Editor: change the speed of each part (0.25x to 4x, voices keep their pitch)
+- Editor: one row per audio track with waveform, keep or drop, listen, volume up to 200%, plus fade in and fade out
+- Editor: save with the audio tracks kept separate or mixed into one track
+- Background work (thumbnails, converting recordings, exports) now runs at lower priority so games keep their frame rate
+- Fixed: editing an edited clip named it "(edited) (edited)", and the timeline ruler repeated labels when zoomed in
