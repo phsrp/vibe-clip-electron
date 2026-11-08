@@ -54,6 +54,15 @@ export function VideoPlayer({ clip, onError }: { clip: Clip; onError: (msg: stri
       setMix(m)
       v.muted = true
       const e = new MultiTrackAudio(v, t.map((x) => x.url))
+      // If the separate tracks can't play, go back to the video's own sound rather than silence.
+      e.onFail = (reason) => {
+        console.warn(`Separate audio tracks failed (${reason}); using the video's own sound`)
+        if (engine.current === e) engine.current = null
+        e.destroy()
+        setTracks([])
+        v.muted = muted
+        v.volume = Math.min(1, master)
+      }
       m.forEach((x, i) => e.setTrack(i, x))
       e.setMaster(master, muted)
       engine.current = e

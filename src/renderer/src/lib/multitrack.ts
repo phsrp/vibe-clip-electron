@@ -13,6 +13,9 @@ export class MultiTrackAudio {
   private tracks: { el: HTMLAudioElement; gain: GainNode; mix: TrackMix }[] = []
   private timer: number | null = null
   private off: (() => void)[] = []
+  private failed = false
+  /** Called once if a track can't be loaded, so the player can fall back to the video's own sound. */
+  onFail: ((reason: string) => void) | null = null
 
   constructor(
     private video: HTMLVideoElement,
@@ -24,6 +27,11 @@ export class MultiTrackAudio {
       const el = new Audio()
       el.crossOrigin = 'anonymous'
       el.preload = 'auto'
+      el.addEventListener('error', () => {
+        if (this.failed || !el.getAttribute('src')) return
+        this.failed = true
+        this.onFail?.(el.error?.message || `error ${el.error?.code ?? '?'}`)
+      })
       el.src = url
       const gain = this.ctx.createGain()
       this.ctx.createMediaElementSource(el).connect(gain).connect(this.master)

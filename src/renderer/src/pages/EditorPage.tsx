@@ -93,6 +93,13 @@ export function EditorPage({ clip, onClose }: { clip: Clip; onClose: () => void 
     if (!v || trackInfo.length === 0) return
     v.muted = true
     const e = new MultiTrackAudio(v, trackInfo.map((t) => t.url))
+    // If the separate tracks can't play, preview with the video's own sound rather than silence.
+    e.onFail = (reason) => {
+      console.warn(`Separate audio tracks failed (${reason}); using the video's own sound`)
+      if (engine.current === e) engine.current = null
+      e.destroy()
+      v.muted = false
+    }
     engine.current = e
     return () => {
       e.destroy()

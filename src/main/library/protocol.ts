@@ -31,7 +31,9 @@ export function mediaUrl(file: string): string {
 /** Must run before the app is ready. */
 export function registerMediaScheme(): void {
   protocol.registerSchemesAsPrivileged([
-    { scheme: 'media', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
+    // corsEnabled: the player loads audio tracks "cross-origin" so Web Audio may process them;
+    // without it Chromium refuses them (as a "format error") and the player goes silent.
+    { scheme: 'media', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } }
   ])
 }
 
